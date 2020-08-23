@@ -51,17 +51,12 @@ MODULE_PARM_DESC(swap_opt_cmd, "Swap the Option (\"Alt\") and Command (\"Flag\")
 		"(For people who want to keep Windows PC keyboard muscle memory. "
 		"[0] = as-is, Mac layout. 1 = swapped, Windows layout.)");
 
-static unsigned int swap_fn_leftctrl;
-module_param(swap_fn_leftctrl, uint, 0644);
-MODULE_PARM_DESC(swap_fn_leftctrl, "Swap the Fn and left Control keys. "
-		"(For people who want to keep PC keyboard muscle memory. "
-		"[0] = as-is, Mac layout, 1 = swapped, PC layout)");
-
-static unsigned int swap_fn_f13_insert;
-module_param(swap_fn_f13_insert, uint, 0644);
-MODULE_PARM_DESC(swap_fn_f13_insert, "Swap the Fn and f13 keys, making fn insert and f13 fn. "
-		"(For people who need insert."
-		"[0] = as-is, Mac layout, 1 = swapped)");
+static unsigned int swap_fn;
+module_param(swap_fn, uint, 0644);
+MODULE_PARM_DESC(swap_fn, "Swap the Fn and some other key. "
+		"(For people who had their Fn key cap chewed off and stolen by a cockatoo. "
+		"[0] = as-is, Mac layout, 1 = swap with left Control, 2 = swap with F13[Insert], "
+		"3 = swap with left Command, 4 = swap with Caps Lock");
 
 static unsigned int rightalt_as_rightctrl;
 module_param(rightalt_as_rightctrl, uint, 0644);
@@ -76,6 +71,7 @@ MODULE_PARM_DESC(ejectcd_as_delete, "Use Eject-CD key as Delete key. "
 struct apple_sc {
 	unsigned long quirks;
 	unsigned int fn_on;
+	unsigned int fn_found;
 	DECLARE_BITMAP(pressed_numlock, KEY_CNT);
 };
 
@@ -189,6 +185,11 @@ static const struct apple_key_translation swapped_fn_leftctrl_keys[] = {
 	{ }
 };
 
+static const struct apple_key_translation swapped_fn_leftcmd_keys[] = {
+	{ KEY_FN, KEY_LEFTMETA },
+	{ }
+};
+
 static const struct apple_key_translation swapped_fn_f13_keys[] = {
 	{ KEY_FN, KEY_F13 },
 	{ }
@@ -225,10 +226,24 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 	bool do_translate;
 	u16 code = 0;
 
-	u16 fn_keycode = (swap_fn_leftctrl) ? (KEY_LEFTCTRL) : (KEY_FN);
-
-	if (swap_fn_f13_insert && !swap_fn_leftctrl)
+	u16 fn_keycode = KEY_FN;
+	switch (swap_fn) {
+	case 1:
+		fn_keycode = KEY_LEFTCTRL;
+		break;
+	case 2:
 		fn_keycode = KEY_F13;
+		break;
+	case 3:
+		fn_keycode = KEY_LEFTMETA;
+		break;
+	case 4:
+		fn_keycode = KEY_CAPSLOCK;
+		break;
+	case 0:
+	default:
+		break;
+	}
 
 	if (usage->code == fn_keycode) {
 		asc->fn_on = !!value;
@@ -236,7 +251,7 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 		return 1;
 	}
 
-	if (usage->code == KEY_FN && swap_fn_f13_insert && !swap_fn_leftctrl) {
+	if (usage->code == KEY_FN && swap_fn == 2) {
 		input_event(input, usage->type, KEY_INSERT, value);
 		return 1;
 	}
@@ -330,7 +345,7 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 		}
 	}
 
-	if (swap_fn_leftctrl) {
+	if (swap_fn == 1) {
 		trans = apple_find_translation(swapped_fn_leftctrl_keys, usage->code);
 		if (trans) {
 			input_event(input, usage->type, trans->to, value);
@@ -338,8 +353,16 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 		}
 	}
 
-	if (swap_fn_f13_insert && !swap_fn_leftctrl) {
+	if (swap_fn == 2) {
 			trans = apple_find_translation(swapped_fn_f13_keys, usage->code);
+			if (trans) {
+				input_event(input, usage->type, trans->to, value);
+				return 1;
+			}
+	}
+
+	if (swap_fn == 3) {
+			trans = apple_find_translation(swapped_fn_leftcmd_keys, usage->code);
 			if (trans) {
 				input_event(input, usage->type, trans->to, value);
 				return 1;
@@ -418,13 +441,18 @@ static void apple_setup_input(struct input_dev *input)
 	for (trans = apple_iso_keyboard; trans->from; trans++)
 		set_bit(trans->to, input->keybit);
 
-	if (swap_fn_leftctrl) {
+	if (swap_fn == 1) {
 		for (trans = swapped_fn_leftctrl_keys; trans->from; trans++)
 			set_bit(trans->to, input->keybit);
 	}
 
-	if (swap_fn_f13_insert && !swap_fn_leftctrl) {
+	if (swap_fn == 2) {
 		for (trans = swapped_fn_f13_keys; trans->from; trans++)
+			set_bit(trans->to, input->keybit);
+	}
+
+	if (swap_fn == 3) {
+		for (trans = swapped_fn_leftcmd_keys; trans->from; trans++)
 			set_bit(trans->to, input->keybit);
 	}
 
@@ -443,12 +471,14 @@ static int apple_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 		struct hid_field *field, struct hid_usage *usage,
 		unsigned long **bit, int *max)
 {
+	struct apple_sc *asc = hid_get_drvdata(hdev);
 	if (usage->hid == (HID_UP_CUSTOM | 0x0003) ||
 			usage->hid == (HID_UP_MSVENDOR | 0x0003) ||
 			usage->hid == (HID_UP_HPVENDOR2 | 0x0003)) {
 		/* The fn key on Apple USB keyboards */
 		set_bit(EV_REP, hi->input->evbit);
 		hid_map_usage_clear(hi, usage, bit, max, EV_KEY, KEY_FN);
+		asc->fn_found = true;
 		apple_setup_input(hi->input);
 		return 1;
 	}
@@ -470,6 +500,19 @@ static int apple_input_mapped(struct hid_device *hdev, struct hid_input *hi,
 			hid_map_usage(hi, usage, bit, max, EV_KEY, BTN_2);
 		else if (usage->code == BTN_2)
 			hid_map_usage(hi, usage, bit, max, EV_KEY, BTN_1);
+	}
+
+	return 0;
+}
+
+static int apple_input_configured(struct hid_device *hdev,
+		struct hid_input *hidinput)
+{
+	struct apple_sc *asc = hid_get_drvdata(hdev);
+
+	if ((asc->quirks & APPLE_HAS_FN) && !asc->fn_found) {
+		hid_info(hdev, "Fn key not found (Apple Wireless Keyboard clone?), disabling Fn key handling\n");
+		asc->quirks = 0;
 	}
 
 	return 0;
@@ -689,6 +732,7 @@ static struct hid_driver apple_driver = {
 	.event = apple_event,
 	.input_mapping = apple_input_mapping,
 	.input_mapped = apple_input_mapped,
+	.input_configured = apple_input_configured,
 };
 module_hid_driver(apple_driver);
 
