@@ -505,7 +505,7 @@ static const struct applespi_key_translation apple_iso_keyboard[] = {
 	{ }
 };
 
-static const struct applespi_key_translation applespi_caps_codes[] = {
+static const struct applespi_key_translation applespi_caps_ctrl_codes[] = {
     { KEY_CAPSLOCK, KEY_LEFTCTRL },
 };
 
@@ -1110,14 +1110,14 @@ static unsigned int applespi_translate_iso_layout(unsigned int key)
 
 static unsigned int applespi_translate_caps_key(unsigned int key)
 {
-	const struct applespi_key_translation *trans;
-	int do_translate;
+	const struct applespi_key_translation *trans = 
+		applespi_find_translation(applespi_caps_ctrl_codes, key);
 
-	trans = applespi_find_translation(applespi_caps_codes, key);
-	if (trans)
-		key = trans->to;
-
-	return key;
+	if (trans) {
+		return trans->to;
+	} else {
+		return key;
+	}
 }
 
 static unsigned int applespi_code_to_key(u8 code, int fn_pressed)
@@ -1157,12 +1157,14 @@ applespi_remap_caps_key(struct keyboard_protocol *keyboard_protocol)
 {
 	//static int fn_islocked = 0;
 	unsigned char tmp;
-	u8 bit = BIT((fnremap - 1) & 0x07);
+	u8 bit = BIT(0);
 	if (capslockmode == CAPS_LOCK_MODE_SPARC) {
 		// SPARCStation mode
-		if (keybaord_protocol->keys_pressed)
-		keyboard_protocol->modifiers  |= 1;
-		keyboard_protocol->modifiers &= ~1;
+		if (keybaord_protocol->keys_pressed) {
+			keyboard_protocol->modifiers  |= bit;
+		} else {
+			keyboard_protocol->modifiers &= ~1;
+		}
 	} //else if (capslockmode == CAPS_LOCK_MODE_FNLOCK) {
 		// FnLock mode
 	//}
@@ -1190,7 +1192,7 @@ applespi_handle_keyboard_event(struct applespi_data *applespi,
 	applespi_remap_fn_key(keyboard_protocol);
 
     /* remap caps lock key if desired */
-	/*applespi_remap_caps_key(keyboard_protocol);*/
+	applespi_remap_caps_key(keyboard_protocol);
 
 	/* check released keys */
 	for (i = 0; i < MAX_ROLLOVER; i++) {
